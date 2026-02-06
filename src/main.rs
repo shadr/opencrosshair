@@ -119,8 +119,8 @@ fn main() {
     );
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_input_region(Some(&region));
-    layer.set_anchor(Anchor::BOTTOM);
-    layer.set_size(1920, 1080);
+    layer.set_anchor(Anchor::all()); // Center the layer properly
+    layer.set_size(0, 0); // Let the compositor decide the size
     layer.commit();
 
     // Initialize wgpu
@@ -161,12 +161,25 @@ fn main() {
         output_state: OutputState::new(&globals, &qh),
 
         exit: false,
-        width: 256,
-        height: 256,
-        device,
-        surface,
+        width: 300, // Smaller initial size
+        height: 300,
         adapter,
+        device,
         queue,
+        surface,
+        
+        // Initialize as None - will be created on first configure
+        shader: None,
+        vertex_buffer: None,
+        index_buffer: None,
+        diffuse_texture: None,
+        diffuse_texture_view: None,
+        diffuse_sampler: None,
+        texture_bind_group: None,
+        texture_bind_group_layout: None,
+        camera_bind_group_layout: None,
+        render_pipeline: None,
+        initialized: false,
     };
 
     // We don't draw immediately, the configure will notify us when to first draw.
@@ -196,7 +209,21 @@ struct Wgpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
+    
+    // Pre-created resources to avoid recreating on every configure
+    shader: Option<wgpu::ShaderModule>,
+    vertex_buffer: Option<wgpu::Buffer>,
+    index_buffer: Option<wgpu::Buffer>,
+    diffuse_texture: Option<wgpu::Texture>,
+    diffuse_texture_view: Option<wgpu::TextureView>,
+    diffuse_sampler: Option<wgpu::Sampler>,
+    texture_bind_group: Option<wgpu::BindGroup>,
+    texture_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    camera_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    render_pipeline: Option<wgpu::RenderPipeline>,
+    initialized: bool,
 }
+
 
 impl CompositorHandler for Wgpu {
     fn scale_factor_changed(
@@ -293,15 +320,21 @@ impl LayerShellHandler for Wgpu {
         _serial: u32,
     ) {
         let (new_width, new_height) = configure.new_size;
-        self.width = new_width;
-        self.height = new_height;
+        // Only update dimensions if they actually changed
+        if new_width != 0 && new_height != 0 {
+            self.width = new_width;
+            self.height = new_height;
+        } else {
+            // Use a reasonable default if the compositor didn't provide dimensions
+            self.width = 300;
+            self.height = 300;
+        }
 
-        let adapter = &self.adapter;
         let surface = &self.surface;
         let device = &self.device;
         let queue = &self.queue;
 
-        let cap = surface.get_capabilities(&adapter);
+        let cap = surface.get_capabilities(&self.adapter);
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: cap.formats[0],
@@ -311,19 +344,28 @@ impl LayerShellHandler for Wgpu {
             height: self.height,
             desired_maximum_frame_latency: 2,
             // Wayland is inherently a mailbox system.
-            present_mode: wgpu::PresentMode::Mailbox,
+            present_mode: wgpu::PresentMode::Fifo, // Changed to Fifo for better power efficiency
         };
 
         surface.configure(&self.device, &surface_config);
 
-        // We don't plan to render much in this example, just clear the surface.
-        let surface_texture = surface
-            .get_current_texture()
-            .expect("failed to acquire next swapchain texture");
-        let texture_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        // Initialize resources only once
+        if !self.initialized {
+            self.initialize_resources();
+            self.initialized = true;
+        }
 
+        // Render the frame
+        self.render_frame();
+    }
+}
+
+impl Wgpu {
+    fn initialize_resources(&mut self) {
+        let device = &self.device;
+        let queue = &self.queue;
+
+        // Load the crosshair image once
         let diffuse_bytes = include_bytes!("../cross.png");
         let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
         let diffuse_rgba = diffuse_image.to_rgba8();
@@ -335,6 +377,7 @@ impl LayerShellHandler for Wgpu {
             depth_or_array_layers: 1,
         };
 
+        // Create texture
         let diffuse_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("crosshair_texture"),
             size: texture_size,
@@ -360,8 +403,8 @@ impl LayerShellHandler for Wgpu {
             },
             texture_size,
         );
-        let diffuse_texture_view =
-            diffuse_texture.create_view(&wgpu::wgt::TextureViewDescriptor::default());
+        
+        let diffuse_texture_view = diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -371,31 +414,32 @@ impl LayerShellHandler for Wgpu {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
+
+        // Create bind group layout for textures
+        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        // This should match the filterable field of the
-                        // corresponding Texture entry above.
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
-        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("texture_bind_group_layout"),
+        });
+
+        // Create bind group for textures
+        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -410,6 +454,7 @@ impl LayerShellHandler for Wgpu {
             label: Some("diffuse_bind_group"),
         });
 
+        // Create vertices and buffers
         let vertices = create_vertices(SCALE);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -422,142 +467,137 @@ impl LayerShellHandler for Wgpu {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // Create shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        // For orthographic projection, we want to map screen coordinates directly
-        // The vertices are defined in world space [-20, 20], so we need to center them on screen
-
-        // Define the intended screen dimensions (what was requested)
-        let intended_screen_width = 1920.0;
-        let intended_screen_height = 1080.0;
-        
-        // Orthographic projection that maps the layer dimensions to NDC
-        let proj = cgmath::ortho(0.0, self.width as f32, 0.0, self.height as f32, -1.0, 1.0);
-        
-        // Position the crosshair at the center of the intended full screen
-        // regardless of the layer's actual position on screen
-        let intended_center_x: f32 = intended_screen_width / 2.0;
-        let intended_center_y: f32 = intended_screen_height / 2.0;
-        
-        // Since the layer is anchored to the bottom, the layer's coordinate system
-        // starts at the top-left of the layer area
-        // If the layer is positioned somewhere within the full screen,
-        // we need to determine where the intended screen center falls
-        // in the layer's coordinate system
-        
-        // The layer takes up the bottom part of the available space
-        // If the layer height is less than the intended height,
-        // the intended screen center might not fall within the layer
-        
-        // For a layer anchored to the bottom, if we want the crosshair
-        // to appear at the full screen center, we need to position it
-        // at the coordinates that correspond to the full screen center
-        // in the layer's coordinate system
-        
-        // The intended screen center (intended_center_x, intended_center_y)
-        // in the layer's coordinate system depends on where the layer is positioned
-        // Since the layer is anchored to the bottom of the available space,
-        // and the available space might be reduced due to the top bar,
-        // we need to position the crosshair relative to the layer's top-left corner
-        
-        // If we assume the layer fills the available space at the bottom,
-        // then the screen center coordinates in layer space would be:
-        let pos_x = intended_center_x.max(0.0).min(self.width as f32);
-        let pos_y = intended_center_y.max(0.0).min(self.height as f32);
-        
-        let translation = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
-            pos_x,  // Position crosshair at intended screen center X (clamped to layer)
-            pos_y,  // Position crosshair at intended screen center Y (clamped to layer)
-            0.0,
-        ));
-        
-        let view_proj = OPENGL_TO_WGPU_MATRIX * proj * translation;
-
-        let view_proj_array: [[f32; 4]; 4] = view_proj.into();
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[view_proj_array]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("camera_bind_group_layout"),
-            });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
+        // Create camera bind group layout
+        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                resource: camera_buffer.as_entire_binding(),
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             }],
-            label: Some("camera_bind_group"),
+            label: Some("camera_bind_group_layout"),
         });
 
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
-                immediate_size: 0,
-            });
+        // Create render pipeline layout
+        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+            immediate_size: 0,
+        });
+
+        // Create render pipeline - use a standard format since we can't access cap here
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"), // 1.
-                buffers: &[Vertex::desc()],   // 2.
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                // 3.
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    // 4.
-                    format: surface_config.format, // Use the same format as the surface
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb, // Standard format
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // 2.
+                front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
                 unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None, // 1.
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
-                mask: !0,                         // 3.
-                alpha_to_coverage_enabled: false, // 4.
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
             },
-            multiview_mask: None, // 5.
-            cache: None,          // 6.
+            multiview_mask: None,
+            cache: None,
         });
 
-        let mut encoder = device.create_command_encoder(&Default::default());
+        // Store all resources
+        self.shader = Some(shader);
+        self.vertex_buffer = Some(vertex_buffer);
+        self.index_buffer = Some(index_buffer);
+        self.diffuse_texture = Some(diffuse_texture);
+        self.diffuse_texture_view = Some(diffuse_texture_view);
+        self.diffuse_sampler = Some(diffuse_sampler);
+        self.texture_bind_group = Some(texture_bind_group);
+        self.texture_bind_group_layout = Some(texture_bind_group_layout);
+        self.camera_bind_group_layout = Some(camera_bind_group_layout);
+        self.render_pipeline = Some(render_pipeline);
+    }
+
+    fn render_frame(&mut self) {
+        let _device = &self.device;
+        let queue = &self.queue;
+        let surface = &self.surface;
+
+        // Get current texture
+        let surface_texture = surface.get_current_texture()
+            .expect("failed to acquire next swapchain texture");
+        let texture_view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Update camera matrix for current dimensions
+        let proj = cgmath::ortho(0.0, self.width as f32, 0.0, self.height as f32, -1.0, 1.0);
+        let intended_center_x: f32 = self.width as f32 / 2.0;
+        let intended_center_y: f32 = self.height as f32 / 2.0;
+
+        let translation = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+            intended_center_x,
+            intended_center_y,
+            0.0,
+        ));
+
+        let view_proj = OPENGL_TO_WGPU_MATRIX * proj * translation;
+        let view_proj_array: [[f32; 4]; 4] = view_proj.into();
+
+        // Create temporary camera buffer for this frame
+        let camera_buffer = _device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Temp Camera Buffer"),
+            contents: bytemuck::cast_slice(&[view_proj_array]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        // Create temporary camera bind group for this frame
+        let camera_bind_group = _device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: self.camera_bind_group_layout.as_ref().unwrap(),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("temp_camera_bind_group"),
+        });
+
+        // Create command encoder and render pass
+        let mut encoder = _device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder"),
+        });
+
         {
             let mut renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
+                label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &texture_view,
                     resolve_target: None,
@@ -573,19 +613,18 @@ impl LayerShellHandler for Wgpu {
                 multiview_mask: None,
             });
 
-            renderpass.set_pipeline(&render_pipeline);
-
-            renderpass.set_bind_group(0, &diffuse_bind_group, &[]);
+            renderpass.set_pipeline(self.render_pipeline.as_ref().unwrap());
+            renderpass.set_bind_group(0, self.texture_bind_group.as_ref().unwrap(), &[]);
             renderpass.set_bind_group(1, &camera_bind_group, &[]);
-
-            renderpass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            renderpass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-
+            renderpass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
+            renderpass.set_index_buffer(
+                self.index_buffer.as_ref().unwrap().slice(..),
+                wgpu::IndexFormat::Uint16
+            );
             renderpass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
-            // renderpass.draw(0..VERTICES.len() as u32, 0..1);
         }
 
-        // Submit the command in the queue to execute
+        // Submit the command
         queue.submit(Some(encoder.finish()));
         surface_texture.present();
     }
