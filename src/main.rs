@@ -1,4 +1,3 @@
-use cgmath::Vector3;
 use image::GenericImageView;
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
@@ -423,14 +422,20 @@ impl LayerShellHandler for Wgpu {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let view = cgmath::Matrix4::look_at_rh(
-            cgmath::Point3::new(0.0, 0.0, -1.0),
-            cgmath::Point3::new(0.0, 0.0, 0.0),
-            Vector3::unit_y(),
-        );
-        let proj = cgmath::ortho(0.0, 1920., 0., 1080.0, -1000.0, 1000.0);
-        // let proj = cgmath::perspective(cgmath::Deg(45.0), 1920.0 / 1080.0, 0.1, 1000.0);
-        let view_proj = OPENGL_TO_WGPU_MATRIX * proj * view;
+        // For orthographic projection, we want to map screen coordinates directly
+        // The vertices are defined in world space [-20, 20], so we need to center them on screen
+
+        // Orthographic projection that maps the screen dimensions
+        let proj = cgmath::ortho(0.0, self.width as f32, 0.0, self.height as f32, -1.0, 1.0);
+
+        // Create a translation matrix to position the quad in the center of the screen
+        let translation = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+            self.width as f32 / 2.0,  // Center horizontally
+            self.height as f32 / 2.0, // Center vertically
+            0.0,
+        ));
+
+        let view_proj = OPENGL_TO_WGPU_MATRIX * proj * translation;
 
         let view_proj_array: [[f32; 4]; 4] = view_proj.into();
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
