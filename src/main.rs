@@ -4,11 +4,10 @@ use raw_window_handle::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{Capability, SeatHandler, SeatState},
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -24,7 +23,7 @@ use wayland_client::{
     protocol::{
         wl_output,
         wl_region::{self},
-        wl_seat, wl_surface,
+        wl_surface,
     },
 };
 use wgpu::util::DeviceExt;
@@ -337,7 +336,7 @@ impl LayerShellHandler for Wgpu {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -487,7 +486,7 @@ impl LayerShellHandler for Wgpu {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     // 4.
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: surface_config.format, // Use the same format as the surface
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
