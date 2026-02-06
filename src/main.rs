@@ -430,16 +430,50 @@ impl LayerShellHandler for Wgpu {
         // For orthographic projection, we want to map screen coordinates directly
         // The vertices are defined in world space [-20, 20], so we need to center them on screen
 
-        // Orthographic projection that maps the screen dimensions
+        // Define the intended screen dimensions (what was requested)
+        let intended_screen_width = 1920.0;
+        let intended_screen_height = 1080.0;
+        
+        // Orthographic projection that maps the layer dimensions to NDC
         let proj = cgmath::ortho(0.0, self.width as f32, 0.0, self.height as f32, -1.0, 1.0);
-
-        // Create a translation matrix to position the quad in the center of the screen
+        
+        // Position the crosshair at the center of the intended full screen
+        // regardless of the layer's actual position on screen
+        let intended_center_x: f32 = intended_screen_width / 2.0;
+        let intended_center_y: f32 = intended_screen_height / 2.0;
+        
+        // Since the layer is anchored to the bottom, the layer's coordinate system
+        // starts at the top-left of the layer area
+        // If the layer is positioned somewhere within the full screen,
+        // we need to determine where the intended screen center falls
+        // in the layer's coordinate system
+        
+        // The layer takes up the bottom part of the available space
+        // If the layer height is less than the intended height,
+        // the intended screen center might not fall within the layer
+        
+        // For a layer anchored to the bottom, if we want the crosshair
+        // to appear at the full screen center, we need to position it
+        // at the coordinates that correspond to the full screen center
+        // in the layer's coordinate system
+        
+        // The intended screen center (intended_center_x, intended_center_y)
+        // in the layer's coordinate system depends on where the layer is positioned
+        // Since the layer is anchored to the bottom of the available space,
+        // and the available space might be reduced due to the top bar,
+        // we need to position the crosshair relative to the layer's top-left corner
+        
+        // If we assume the layer fills the available space at the bottom,
+        // then the screen center coordinates in layer space would be:
+        let pos_x = intended_center_x.max(0.0).min(self.width as f32);
+        let pos_y = intended_center_y.max(0.0).min(self.height as f32);
+        
         let translation = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
-            self.width as f32 / 2.0,  // Center horizontally
-            self.height as f32 / 2.0, // Center vertically
+            pos_x,  // Position crosshair at intended screen center X (clamped to layer)
+            pos_y,  // Position crosshair at intended screen center Y (clamped to layer)
             0.0,
         ));
-
+        
         let view_proj = OPENGL_TO_WGPU_MATRIX * proj * translation;
 
         let view_proj_array: [[f32; 4]; 4] = view_proj.into();
