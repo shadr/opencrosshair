@@ -341,7 +341,7 @@ impl LayerShellHandler for Wgpu {
             alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
             width: self.width,
             height: self.height,
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
             // Wayland is inherently a mailbox system.
             present_mode: wgpu::PresentMode::Fifo, // Changed to Fifo for better power efficiency
         };
@@ -363,6 +363,9 @@ impl Wgpu {
     fn initialize_resources(&mut self) {
         let device = &self.device;
         let queue = &self.queue;
+
+        // Get surface capabilities to determine the correct format
+        let cap = self.surface.get_capabilities(&self.adapter);
 
         // Load the crosshair image once
         let diffuse_bytes = include_bytes!("../cross.png");
@@ -498,7 +501,7 @@ impl Wgpu {
                 immediate_size: 0,
             });
 
-        // Create render pipeline - use a standard format since we can't access cap here
+        // Create render pipeline - use the same format as the surface
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -512,7 +515,7 @@ impl Wgpu {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb, // Standard format
+                    format: cap.formats[0], // Use the same format as the surface
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
