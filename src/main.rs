@@ -35,6 +35,12 @@ struct Vertex {
     tex_coords: [f32; 2],
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ColorUniform {
+    color: [f32; 4],
+}
+
 impl Vertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
         use std::mem;
@@ -170,11 +176,10 @@ fn main() {
         exit: false,
         width: size_x,
         height: size_y,
-        layer,
-        adapter,
-        device,
-        queue,
-        surface,
+        adapter: Some(adapter),
+        device: Some(device),
+        queue: Some(queue),
+        surface: Some(surface),
 
         // Initialize as None - will be created on first configure
         shader: None,
@@ -186,6 +191,7 @@ fn main() {
         texture_bind_group: None,
         texture_bind_group_layout: None,
         render_pipeline: None,
+        color_uniform_buffer: None,
         initialized: false,
     };
 
@@ -213,11 +219,10 @@ struct Wgpu {
     exit: bool,
     width: u32,
     height: u32,
-    layer: LayerSurface,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
+    adapter: Option<wgpu::Adapter>,
+    device: Option<wgpu::Device>,
+    queue: Option<wgpu::Queue>,
+    surface: Option<wgpu::Surface<'static>>,
 
     // Pre-created resources to avoid recreating on every configure
     shader: Option<wgpu::ShaderModule>,
@@ -229,6 +234,7 @@ struct Wgpu {
     texture_bind_group: Option<wgpu::BindGroup>,
     texture_bind_group_layout: Option<wgpu::BindGroupLayout>,
     render_pipeline: Option<wgpu::RenderPipeline>,
+    color_uniform_buffer: Option<wgpu::Buffer>,
     initialized: bool,
 }
 
@@ -326,11 +332,11 @@ impl LayerShellHandler for Wgpu {
         _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        let surface = &self.surface;
-        let _device = &self.device;
-        let _queue = &self.queue;
+        let surface = self.surface.as_ref().unwrap();
+        let _device = self.device.as_ref().unwrap();
+        let _queue = self.queue.as_ref().unwrap();
 
-        let cap = surface.get_capabilities(&self.adapter);
+        let cap = surface.get_capabilities(self.adapter.as_ref().unwrap());
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: cap.formats[0],
@@ -342,7 +348,7 @@ impl LayerShellHandler for Wgpu {
             present_mode: wgpu::PresentMode::Fifo,
         };
 
-        surface.configure(&self.device, &surface_config);
+        surface.configure(self.device.as_ref().unwrap(), &surface_config);
 
         // Initialize resources only once
         if !self.initialized {
@@ -357,11 +363,15 @@ impl LayerShellHandler for Wgpu {
 
 impl Wgpu {
     fn initialize_resources(&mut self) {
-        let device = &self.device;
-        let queue = &self.queue;
+        let device = self.device.as_ref().unwrap();
+        let queue = self.queue.as_ref().unwrap();
 
         // Get surface capabilities to determine the correct format
-        let cap = self.surface.get_capabilities(&self.adapter);
+        let cap = self
+            .surface
+            .as_ref()
+            .unwrap()
+            .get_capabilities(self.adapter.as_ref().unwrap());
 
         // Load the crosshair image once
         let dimensions = self.crosshair.dimensions();
@@ -431,11 +441,30 @@ impl Wgpu {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<ColorUniform>() as u64,
+                            ),
+                            ty: wgpu::BufferBindingType::Uniform,
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("texture_bind_group_layout"),
             });
 
         // Create bind group for textures
+        let color_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("color_uniform_buffer"),
+            size: std::mem::size_of::<ColorUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
             entries: &[
@@ -446,6 +475,14 @@ impl Wgpu {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &color_uniform_buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(std::mem::size_of::<ColorUniform>() as u64),
+                    }),
                 },
             ],
             label: Some("diffuse_bind_group"),
@@ -527,18 +564,28 @@ impl Wgpu {
         self.texture_bind_group = Some(texture_bind_group);
         self.texture_bind_group_layout = Some(texture_bind_group_layout);
         self.render_pipeline = Some(render_pipeline);
+        self.color_uniform_buffer = Some(color_uniform_buffer);
     }
 
     fn render_frame(&mut self) {
-        let _device = &self.device;
-        let _queue = &self.queue;
-        let surface = &self.surface;
+        let _device = self.device.as_ref().unwrap();
+        let queue = self.queue.as_ref().unwrap();
+        let surface = self.surface.as_ref().unwrap();
+
+        // Set default color (white - no modification)
+        let color = ColorUniform {
+            color: [1.0, 0.0, 0.0, 1.0],
+        };
+        queue.write_buffer(
+            self.color_uniform_buffer.as_ref().unwrap(),
+            0,
+            bytemuck::cast_slice(&[color]),
+        );
 
         // Get current texture
         let surface_texture = surface
             .get_current_texture()
             .expect("failed to acquire next swapchain texture");
-        dbg!(surface_texture.texture.size());
         let texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -577,8 +624,23 @@ impl Wgpu {
         }
 
         // Submit the command
-        self.queue.submit(Some(encoder.finish()));
+        queue.submit(Some(encoder.finish()));
         surface_texture.present();
+
+        self.shader = None;
+        self.vertex_buffer = None;
+        self.index_buffer = None;
+        self.diffuse_texture = None;
+        self.diffuse_texture_view = None;
+        self.diffuse_sampler = None;
+        self.texture_bind_group = None;
+        self.texture_bind_group_layout = None;
+        self.render_pipeline = None;
+        self.color_uniform_buffer = None;
+        self.adapter = None;
+        self.device = None;
+        self.queue = None;
+        self.surface = None;
     }
 }
 

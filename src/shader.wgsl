@@ -20,12 +20,19 @@ fn vs_main(
 
 // Fragment shader
 
+struct ColorUniform {
+    color: vec4<f32>,
+}
+
 @group(0) @binding(0)
 var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
 var s_diffuse: sampler;
+@group(0) @binding(2)
+var<uniform> u_color: ColorUniform;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    return texture_color * u_color.color;
 }
