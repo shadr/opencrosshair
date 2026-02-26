@@ -185,7 +185,6 @@ fn main() {
         diffuse_sampler: None,
         texture_bind_group: None,
         texture_bind_group_layout: None,
-        camera_bind_group_layout: None,
         render_pipeline: None,
         initialized: false,
     };
@@ -229,7 +228,6 @@ struct Wgpu {
     diffuse_sampler: Option<wgpu::Sampler>,
     texture_bind_group: Option<wgpu::BindGroup>,
     texture_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    camera_bind_group_layout: Option<wgpu::BindGroupLayout>,
     render_pipeline: Option<wgpu::RenderPipeline>,
     initialized: bool,
 }
@@ -472,27 +470,11 @@ impl Wgpu {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        // Create camera bind group layout
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("camera_bind_group_layout"),
-            });
-
         // Create render pipeline layout
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+                bind_group_layouts: &[&texture_bind_group_layout],
                 immediate_size: 0,
             });
 
@@ -544,7 +526,6 @@ impl Wgpu {
         self.diffuse_sampler = Some(diffuse_sampler);
         self.texture_bind_group = Some(texture_bind_group);
         self.texture_bind_group_layout = Some(texture_bind_group_layout);
-        self.camera_bind_group_layout = Some(camera_bind_group_layout);
         self.render_pipeline = Some(render_pipeline);
     }
 
@@ -561,36 +542,6 @@ impl Wgpu {
         let texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Update camera matrix for current dimensions (small fixed surface)
-        let proj = cgmath::ortho(0.0, self.width as f32, 0.0, self.height as f32, -1.0, 1.0);
-
-        // Center the crosshair in the small surface
-        let pos_x = self.width as f32 / 2.0;
-        let pos_y = self.height as f32 / 2.0;
-
-        let translation =
-            cgmath::Matrix4::from_translation(cgmath::Vector3::new(pos_x, pos_y, 0.0));
-
-        let view_proj = OPENGL_TO_WGPU_MATRIX * proj * translation;
-        let view_proj_array: [[f32; 4]; 4] = view_proj.into();
-
-        // Create temporary camera buffer for this frame
-        let camera_buffer = _device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Temp Camera Buffer"),
-            contents: bytemuck::cast_slice(&[view_proj_array]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        // Create temporary camera bind group for this frame
-        let camera_bind_group = _device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: self.camera_bind_group_layout.as_ref().unwrap(),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-            label: Some("temp_camera_bind_group"),
-        });
 
         // Create command encoder and render pass
         let mut encoder = _device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -617,7 +568,6 @@ impl Wgpu {
 
             renderpass.set_pipeline(self.render_pipeline.as_ref().unwrap());
             renderpass.set_bind_group(0, self.texture_bind_group.as_ref().unwrap(), &[]);
-            renderpass.set_bind_group(1, &camera_bind_group, &[]);
             renderpass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
             renderpass.set_index_buffer(
                 self.index_buffer.as_ref().unwrap().slice(..),
