@@ -1,4 +1,4 @@
-use image::GenericImageView;
+use image::{ImageBuffer, Rgba};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
@@ -11,7 +11,7 @@ use smithay_client_toolkit::{
     shell::{
         WaylandSurface,
         wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+            KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
             LayerSurfaceConfigure,
         },
     },
@@ -61,19 +61,19 @@ impl Vertex {
 fn create_vertices(scale: f32) -> [Vertex; 4] {
     [
         Vertex {
-            position: [-1.0 * scale, 1.0 * scale, 0.0],
+            position: [-scale, scale, 0.0],
             tex_coords: [0.0, 0.0],
         }, // A
         Vertex {
-            position: [1.0 * scale, 1.0 * scale, 0.0],
+            position: [scale, scale, 0.0],
             tex_coords: [1.0, 0.0],
         }, // B
         Vertex {
-            position: [1.0 * scale, -1.0 * scale, 0.0],
+            position: [scale, -scale, 0.0],
             tex_coords: [1.0, 1.0],
         }, // C
         Vertex {
-            position: [-1.0 * scale, -1.0 * scale, 0.0],
+            position: [-scale, -scale, 0.0],
             tex_coords: [0.0, 1.0],
         }, // D
     ]
@@ -81,7 +81,7 @@ fn create_vertices(scale: f32) -> [Vertex; 4] {
 
 const INDICES: &[u16] = &[0, 3, 1, 1, 3, 2];
 
-const SCALE: f32 = 16.0; // Controls the size of the crosshair
+const SCALE: f32 = 0.8; // Controls the size of the crosshair
 
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_cols(
@@ -93,7 +93,10 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_co
 
 fn main() {
     env_logger::init();
-    // let view = cgmath::Matrix4::look_at_rh(cgmath::Point3::new(0.0, 0., 1.0), )
+
+    let diffuse_bytes = include_bytes!("../cross.png");
+    let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
+    let diffuse_rgba = diffuse_image.to_rgba8();
 
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
@@ -119,8 +122,10 @@ fn main() {
     );
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_input_region(Some(&region));
-    layer.set_anchor(Anchor::all()); // Center the layer properly
-    layer.set_size(0, 0); // Let the compositor decide the size
+    let (size_x, size_y) = diffuse_rgba.dimensions();
+    layer.set_size(size_x, size_y);
+    // layer.set_margin(0, 0, 0, 0);
+    layer.set_exclusive_zone(-1);
     layer.commit();
 
     // Initialize wgpu
@@ -160,9 +165,12 @@ fn main() {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
 
+        crosshair: diffuse_rgba,
+
         exit: false,
-        width: 300, // Smaller initial size
-        height: 300,
+        width: size_x,
+        height: size_y,
+        layer,
         adapter,
         device,
         queue,
@@ -201,10 +209,12 @@ struct Wgpu {
     registry_state: RegistryState,
     output_state: OutputState,
 
+    crosshair: ImageBuffer<Rgba<u8>, Vec<u8>>,
+
     exit: bool,
     width: u32,
     height: u32,
-    // window: Window,
+    layer: LayerSurface,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -315,20 +325,9 @@ impl LayerShellHandler for Wgpu {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
+        _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        let (new_width, new_height) = configure.new_size;
-        // Only update dimensions if they actually changed
-        if new_width != 0 && new_height != 0 {
-            self.width = new_width;
-            self.height = new_height;
-        } else {
-            // Use a reasonable default if the compositor didn't provide dimensions
-            self.width = 300;
-            self.height = 300;
-        }
-
         let surface = &self.surface;
         let _device = &self.device;
         let _queue = &self.queue;
@@ -342,8 +341,7 @@ impl LayerShellHandler for Wgpu {
             width: self.width,
             height: self.height,
             desired_maximum_frame_latency: 1,
-            // Wayland is inherently a mailbox system.
-            present_mode: wgpu::PresentMode::Fifo, // Changed to Fifo for better power efficiency
+            present_mode: wgpu::PresentMode::Fifo,
         };
 
         surface.configure(&self.device, &surface_config);
@@ -368,10 +366,7 @@ impl Wgpu {
         let cap = self.surface.get_capabilities(&self.adapter);
 
         // Load the crosshair image once
-        let diffuse_bytes = include_bytes!("../cross.png");
-        let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
-        let diffuse_rgba = diffuse_image.to_rgba8();
-        let dimensions = diffuse_image.dimensions();
+        let dimensions = self.crosshair.dimensions();
 
         let texture_size = wgpu::Extent3d {
             width: dimensions.0,
@@ -397,7 +392,7 @@ impl Wgpu {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &diffuse_rgba,
+            &self.crosshair,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * dimensions.0),
@@ -562,29 +557,20 @@ impl Wgpu {
         let surface_texture = surface
             .get_current_texture()
             .expect("failed to acquire next swapchain texture");
+        dbg!(surface_texture.texture.size());
         let texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Update camera matrix for current dimensions
+        // Update camera matrix for current dimensions (small fixed surface)
         let proj = cgmath::ortho(0.0, self.width as f32, 0.0, self.height as f32, -1.0, 1.0);
 
-        // Calculate the intended screen center (assuming common resolution)
-        let intended_screen_width = 1920.0;
-        let intended_screen_height = 1080.0;
-        let intended_center_x: f32 = intended_screen_width / 2.0;
-        let intended_center_y: f32 = intended_screen_height / 2.0;
+        // Center the crosshair in the small surface
+        let pos_x = self.width as f32 / 2.0;
+        let pos_y = self.height as f32 / 2.0;
 
-        // Position the crosshair at the intended screen center within the layer's coordinate system
-        // Clamp to layer bounds to ensure it stays within the visible area
-        let pos_x = intended_center_x.max(0.0).min(self.width as f32);
-        let pos_y = intended_center_y.max(0.0).min(self.height as f32);
-
-        let translation = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
-            pos_x, // Position crosshair at intended screen center X (clamped to layer)
-            pos_y, // Position crosshair at intended screen center Y (clamped to layer)
-            0.0,
-        ));
+        let translation =
+            cgmath::Matrix4::from_translation(cgmath::Vector3::new(pos_x, pos_y, 0.0));
 
         let view_proj = OPENGL_TO_WGPU_MATRIX * proj * translation;
         let view_proj_array: [[f32; 4]; 4] = view_proj.into();
