@@ -89,14 +89,6 @@ const INDICES: &[u16] = &[0, 3, 1, 1, 3, 2];
 
 const SCALE: f32 = 0.8; // Controls the size of the crosshair
 
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_cols(
-    cgmath::Vector4::new(1.0, 0.0, 0.0, 0.0),
-    cgmath::Vector4::new(0.0, 1.0, 0.0, 0.0),
-    cgmath::Vector4::new(0.0, 0.0, 0.5, 0.0),
-    cgmath::Vector4::new(0.0, 0.0, 0.5, 1.0),
-);
-
 fn main() {
     env_logger::init();
 
