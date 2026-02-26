@@ -81,7 +81,7 @@ fn create_vertices(scale: f32) -> [Vertex; 4] {
 
 const INDICES: &[u16] = &[0, 3, 1, 1, 3, 2];
 
-const SCALE: f32 = 12.0; // Controls the size of the crosshair
+const SCALE: f32 = 16.0; // Controls the size of the crosshair
 
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_cols(
