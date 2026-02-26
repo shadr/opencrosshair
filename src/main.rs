@@ -4,8 +4,12 @@ use raw_window_handle::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry,
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
     output::{OutputHandler, OutputState},
+    reexports::protocols_wlr::foreign_toplevel::v1::client::{
+        zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+        zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+    },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     shell::{
@@ -15,8 +19,13 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
-use std::ptr::NonNull;
+use std::{collections::HashMap, ptr::NonNull};
+use wayland_backend::client::ObjectId;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
@@ -105,7 +114,6 @@ fn main() {
     // Initialize xdg_shell handlers so we can select the correct adapter
     let compositor_state =
         CompositorState::bind(&globals, &qh).expect("wl_compositor not available");
-    // let xdg_shell_state = XdgShell::bind(&globals, &qh).expect("xdg shell not available");
 
     let region = compositor_state.wl_compositor().create_region(&qh, ());
     region.add(0, 0, 0, 0);
@@ -120,9 +128,9 @@ fn main() {
     );
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_input_region(Some(&region));
+    // Set anchors so we can set an explicit size
     let (size_x, size_y) = diffuse_rgba.dimensions();
     layer.set_size(size_x, size_y);
-    // layer.set_margin(0, 0, 0, 0);
     layer.set_exclusive_zone(-1);
     layer.commit();
 
@@ -159,9 +167,32 @@ fn main() {
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
         .expect("Failed to request device");
 
+    let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
+    let mut slot_pool = SlotPool::new(4096, &shm).expect("Failed to create slot pool");
+    let (drawn_buffer, _) = slot_pool
+        .create_buffer(
+            size_x as i32,
+            size_y as i32,
+            size_x as i32 * 4,
+            wayland_client::protocol::wl_shm::Format::Argb8888,
+        )
+        .unwrap();
+    let (empty_buffer, _) = slot_pool
+        .create_buffer(
+            size_x as i32,
+            size_y as i32,
+            size_x as i32 * 4,
+            wayland_client::protocol::wl_shm::Format::Argb8888,
+        )
+        .unwrap();
+
     let mut wgpu = Wgpu {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
+
+        layer,
+
+        toplevels: HashMap::new(),
 
         crosshair: diffuse_rgba,
 
@@ -185,7 +216,16 @@ fn main() {
         render_pipeline: None,
         color_uniform_buffer: None,
         initialized: false,
+
+        shm,
+        slot_pool,
+        drawn_buffer,
+        empty_buffer,
     };
+
+    wgpu.registry_state
+        .bind_one::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 2..=3, ())
+        .unwrap();
 
     // We don't draw immediately, the configure will notify us when to first draw.
     loop {
@@ -199,12 +239,15 @@ fn main() {
 
     // On exit we must destroy the surface before the window is destroyed.
     drop(wgpu.surface);
-    // drop(wgpu.window);
 }
 
 struct Wgpu {
     registry_state: RegistryState,
     output_state: OutputState,
+
+    layer: LayerSurface,
+
+    toplevels: HashMap<ObjectId, String>,
 
     crosshair: ImageBuffer<Rgba<u8>, Vec<u8>>,
 
@@ -228,6 +271,12 @@ struct Wgpu {
     render_pipeline: Option<wgpu::RenderPipeline>,
     color_uniform_buffer: Option<wgpu::Buffer>,
     initialized: bool,
+
+    // Wayland buffer for layer shell
+    shm: Shm,
+    slot_pool: SlotPool,
+    drawn_buffer: Buffer,
+    empty_buffer: Buffer,
 }
 
 impl CompositorHandler for Wgpu {
@@ -324,13 +373,16 @@ impl LayerShellHandler for Wgpu {
         _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        if self.surface.is_none() {
+            return;
+        }
         let surface = self.surface.as_ref().unwrap();
         let _device = self.device.as_ref().unwrap();
         let _queue = self.queue.as_ref().unwrap();
 
         let cap = surface.get_capabilities(self.adapter.as_ref().unwrap());
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: cap.formats[0],
             view_formats: vec![cap.formats[0]],
             alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
@@ -350,10 +402,26 @@ impl LayerShellHandler for Wgpu {
 
         // Render the frame
         self.render_frame();
+
+        // if let SurfaceKind::Wlr(zwlr_surface) = self.layer.kind() {
+        //     zwlr_surface.ack_configure(serial);
+        // }
     }
 }
 
 impl Wgpu {
+    fn hide_layer(&mut self) {
+        self.layer.set_size(self.width, self.height);
+        self.layer.attach(Some(self.empty_buffer.wl_buffer()), 0, 0);
+        self.layer.commit();
+    }
+
+    fn show_layer(&mut self) {
+        self.layer.set_size(self.width, self.height);
+        self.layer.attach(Some(self.drawn_buffer.wl_buffer()), 0, 0);
+        self.layer.commit();
+    }
+
     fn initialize_resources(&mut self) {
         let device = self.device.as_ref().unwrap();
         let queue = self.queue.as_ref().unwrap();
@@ -560,11 +628,11 @@ impl Wgpu {
     }
 
     fn render_frame(&mut self) {
-        let _device = self.device.as_ref().unwrap();
+        let device = self.device.as_ref().unwrap();
         let queue = self.queue.as_ref().unwrap();
         let surface = self.surface.as_ref().unwrap();
 
-        // Set default color (white - no modification)
+        // Set color uniform (red to make crosshair visible)
         let color = ColorUniform {
             color: [1.0, 0.0, 0.0, 1.0],
         };
@@ -583,7 +651,7 @@ impl Wgpu {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // Create command encoder and render pass
-        let mut encoder = _device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
 
@@ -615,9 +683,88 @@ impl Wgpu {
             renderpass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
         }
 
-        // Submit the command
-        queue.submit(Some(encoder.finish()));
+        // Create a buffer to read back the rendered texture
+        // bytes_per_row must be aligned to COPY_BYTES_PER_ROW_ALIGNMENT (256 bytes)
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u32;
+        let bytes_per_row_unaligned = self.width * 4;
+        let bytes_per_row = (bytes_per_row_unaligned + align - 1) & !(align - 1);
+        let buffer_size = bytes_per_row as u64 * self.height as u64;
+
+        let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Readback Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Copy texture to read buffer
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &surface_texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        // Submit the commands and get submission index
+        let submission_index = queue.submit(Some(encoder.finish()));
         surface_texture.present();
+
+        // Wait for the GPU to finish
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission_index),
+            timeout: None,
+        });
+
+        // Map the buffer to read the data
+        let buffer_slice = read_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        let _ = device.poll(wgpu::PollType::Poll);
+        rx.recv().unwrap().unwrap();
+
+        let mapped_data = buffer_slice.get_mapped_range();
+
+        let actual_stride = (self.width * 4) as i32;
+        let (buffer, canvas) = self
+            .slot_pool
+            .create_buffer(
+                self.width as i32,
+                self.height as i32,
+                actual_stride,
+                wayland_client::protocol::wl_shm::Format::Argb8888,
+            )
+            .expect("Failed to create wl_buffer");
+
+        // Copy row by row, accounting for padding in the mapped_data
+        for row in 0..self.height as usize {
+            let src_offset = row * bytes_per_row as usize;
+            let dst_offset = row * actual_stride as usize;
+            canvas[dst_offset..dst_offset + actual_stride as usize]
+                .copy_from_slice(&mapped_data[src_offset..src_offset + actual_stride as usize]);
+        }
+
+        self.drawn_buffer = buffer;
+
+        // Clean up wgpu resources
+        drop(mapped_data);
+        drop(read_buffer);
 
         self.shader = None;
         self.vertex_buffer = None;
@@ -636,13 +783,6 @@ impl Wgpu {
     }
 }
 
-delegate_compositor!(Wgpu);
-delegate_output!(Wgpu);
-
-delegate_layer!(Wgpu);
-
-delegate_registry!(Wgpu);
-
 impl ProvidesRegistryState for Wgpu {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
@@ -659,5 +799,88 @@ impl Dispatch<wl_region::WlRegion, ()> for Wgpu {
         _: &Connection,
         _: &QueueHandle<Wgpu>,
     ) {
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Wgpu {
+    fn event(
+        _: &mut Self,
+        _: &ZwlrForeignToplevelManagerV1,
+        _: <ZwlrForeignToplevelManagerV1 as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Wgpu>,
+    ) {
+    }
+
+    fn event_created_child(
+        _opcode: u16,
+        qhandle: &QueueHandle<Self>,
+    ) -> std::sync::Arc<dyn wayland_backend::client::ObjectData> {
+        qhandle.make_data::<ZwlrForeignToplevelHandleV1, ()>(())
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Wgpu {
+    fn event(
+        state: &mut Self,
+        handle: &ZwlrForeignToplevelHandleV1,
+        event: <ZwlrForeignToplevelHandleV1 as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Wgpu>,
+    ) {
+        match event {
+            // zwlr_foreign_toplevel_handle_v1::Event::Title { title } => {
+            //     dbg!(&title);
+            // }
+            zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
+                state.toplevels.insert(handle.id(), app_id);
+            }
+            // zwlr_foreign_toplevel_handle_v1::Event::OutputEnter { output } => todo!(),
+            // zwlr_foreign_toplevel_handle_v1::Event::OutputLeave { output } => todo!(),
+            zwlr_foreign_toplevel_handle_v1::Event::State { state: states } => {
+                if states
+                    .chunks_exact(4)
+                    .any(|chunk| u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) == 2)
+                {
+                    let handle_id = handle.id();
+                    if let Some(app_id) = state.toplevels.get(&handle_id) {
+                        if app_id == "kitty" {
+                            state.hide_layer();
+                        } else {
+                            state.show_layer();
+                        }
+                    }
+                }
+            }
+            // zwlr_foreign_toplevel_handle_v1::Event::Done => todo!(),
+            zwlr_foreign_toplevel_handle_v1::Event::Closed => {
+                state.toplevels.remove(&handle.id());
+            }
+            // zwlr_foreign_toplevel_handle_v1::Event::Parent { parent } => todo!(),
+            _ => (),
+        }
+    }
+
+    fn event_created_child(
+        _opcode: u16,
+        qhandle: &QueueHandle<Self>,
+    ) -> std::sync::Arc<dyn wayland_backend::client::ObjectData> {
+        qhandle.make_data::<ZwlrForeignToplevelHandleV1, ()>(())
+    }
+}
+
+delegate_compositor!(Wgpu);
+delegate_output!(Wgpu);
+delegate_shm!(Wgpu);
+
+delegate_layer!(Wgpu);
+
+delegate_registry!(Wgpu);
+
+impl ShmHandler for Wgpu {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
     }
 }
