@@ -1,3 +1,4 @@
+use clap::Parser;
 use image::{ImageBuffer, Rgba};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
@@ -96,10 +97,55 @@ fn create_vertices(scale: f32) -> [Vertex; 4] {
 
 const INDICES: &[u16] = &[0, 3, 1, 1, 3, 2];
 
-const SCALE: f32 = 0.8; // Controls the size of the crosshair
+#[derive(Parser)]
+#[command(name = "opencrosshair")]
+#[command(about = "A crosshair overlay for Wayland compositors", long_about = None)]
+struct Args {
+    /// App IDs for which the crosshair should be visible (comma-separated)
+    #[arg(short = 'a', long = "app-ids", value_delimiter = ',')]
+    app_ids: Vec<String>,
+
+    /// Color of the crosshair in RGBA format (0.0-1.0 for each channel, comma-separated, e.g., "1.0,0.0,0.0,1.0" for red)
+    #[arg(short = 'c', long = "color", default_value_t = String::from("1.0,0.0,0.0,1.0"))]
+    color: String,
+
+    /// Scale factor for the crosshair size (default: 0.8)
+    #[arg(short = 's', long = "scale", default_value_t = 0.8)]
+    scale: f32,
+}
 
 fn main() {
     env_logger::init();
+
+    let args = Args::parse();
+
+    // Parse color values from command line
+    let color_values: Vec<f32> = args
+        .color
+        .split(',')
+        .map(|s| s.trim().parse().expect("Invalid color value"))
+        .collect();
+
+    if color_values.len() != 4 {
+        eprintln!("Error: Color must have exactly 4 values (RGBA)");
+        std::process::exit(1);
+    }
+
+    let color_rgba = [
+        color_values[0],
+        color_values[1],
+        color_values[2],
+        color_values[3],
+    ];
+
+    // Use the specified app IDs or default to an empty vector
+    let visible_app_ids = if args.app_ids.is_empty() {
+        vec!["".to_string()] // Default to showing on all apps if no app IDs specified
+    } else {
+        args.app_ids
+    };
+
+    let scale = args.scale;
 
     let diffuse_bytes = include_bytes!("../cross.png");
     let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
@@ -193,8 +239,13 @@ fn main() {
         layer,
 
         toplevels: HashMap::new(),
+        visible_app_ids,
 
         crosshair: diffuse_rgba,
+
+        color_rgba,
+
+        scale,
 
         exit: false,
         width: size_x,
@@ -249,7 +300,13 @@ struct Wgpu {
 
     toplevels: HashMap<ObjectId, String>,
 
+    visible_app_ids: Vec<String>,
+
     crosshair: ImageBuffer<Rgba<u8>, Vec<u8>>,
+
+    color_rgba: [f32; 4],
+
+    scale: f32,
 
     exit: bool,
     width: u32,
@@ -549,7 +606,7 @@ impl Wgpu {
         });
 
         // Create vertices and buffers
-        let vertices = create_vertices(SCALE);
+        let vertices = create_vertices(self.scale);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertices),
@@ -632,9 +689,9 @@ impl Wgpu {
         let queue = self.queue.as_ref().unwrap();
         let surface = self.surface.as_ref().unwrap();
 
-        // Set color uniform (red to make crosshair visible)
+        // Set color uniform using the specified color
         let color = ColorUniform {
-            color: [1.0, 0.0, 0.0, 1.0],
+            color: self.color_rgba,
         };
         queue.write_buffer(
             self.color_uniform_buffer.as_ref().unwrap(),
@@ -846,10 +903,13 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Wgpu {
                 {
                     let handle_id = handle.id();
                     if let Some(app_id) = state.toplevels.get(&handle_id) {
-                        if app_id == "kitty" {
-                            state.hide_layer();
-                        } else {
+                        // Check if the app_id is in the list of visible app IDs
+                        if state.visible_app_ids.iter().any(|id| id == app_id)
+                            || state.visible_app_ids.contains(&"".to_string())
+                        {
                             state.show_layer();
+                        } else {
+                            state.hide_layer();
                         }
                     }
                 }
