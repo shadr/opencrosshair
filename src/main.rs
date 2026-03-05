@@ -25,7 +25,7 @@ use smithay_client_toolkit::{
         slot::{Buffer, SlotPool},
     },
 };
-use std::{collections::HashMap, ptr::NonNull};
+use std::{collections::HashMap, path::PathBuf, ptr::NonNull};
 use wayland_backend::client::ObjectId;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
@@ -112,6 +112,10 @@ struct Args {
     /// Index of the display/output to show the crosshair on (e.g., 0, 1)
     #[arg(short = 'd', long = "display")]
     display: Option<usize>,
+
+    /// Path to the crosshair image file (default: embedded cross.png)
+    #[arg(short = 'i', long = "image")]
+    image: Option<PathBuf>,
 }
 
 fn main() {
@@ -147,9 +151,7 @@ fn main() {
 
     let scale = args.scale;
 
-    let diffuse_bytes = include_bytes!("../cross.png");
-    let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
-    let diffuse_rgba = diffuse_image.to_rgba8();
+    let diffuse_rgba = load_crosshair_image(&args.image);
 
     let conn = Connection::connect_to_env().unwrap();
     let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
@@ -305,6 +307,26 @@ fn main() {
 
     // On exit we must destroy the surface before the window is destroyed.
     drop(app.surface);
+}
+
+/// Load crosshair image from specified path or use embedded default
+fn load_crosshair_image(image: &Option<PathBuf>) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let diffuse_image = if let Some(image_path) = image {
+        image::ImageReader::open(image_path)
+            .unwrap_or_else(|e| {
+                eprintln!("Error opening image '{:?}': {}", image_path, e);
+                std::process::exit(1);
+            })
+            .decode()
+            .unwrap_or_else(|e| {
+                eprintln!("Error decoding image '{:?}': {}", image_path, e);
+                std::process::exit(1);
+            })
+    } else {
+        let diffuse_bytes = include_bytes!("../cross.png");
+        image::load_from_memory(diffuse_bytes).unwrap()
+    };
+    diffuse_image.to_rgba8()
 }
 
 struct OpenCrosshair {
