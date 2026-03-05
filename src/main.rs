@@ -247,7 +247,7 @@ fn main() {
         )
         .unwrap();
 
-    let mut wgpu = Wgpu {
+    let mut app = OpenCrosshair {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
 
@@ -289,25 +289,25 @@ fn main() {
         empty_buffer,
     };
 
-    wgpu.registry_state
+    app.registry_state
         .bind_one::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 2..=3, ())
         .unwrap();
 
     // We don't draw immediately, the configure will notify us when to first draw.
     loop {
-        event_queue.blocking_dispatch(&mut wgpu).unwrap();
+        event_queue.blocking_dispatch(&mut app).unwrap();
 
-        if wgpu.exit {
+        if app.exit {
             println!("exiting example");
             break;
         }
     }
 
     // On exit we must destroy the surface before the window is destroyed.
-    drop(wgpu.surface);
+    drop(app.surface);
 }
 
-struct Wgpu {
+struct OpenCrosshair {
     registry_state: RegistryState,
     output_state: OutputState,
 
@@ -351,7 +351,7 @@ struct Wgpu {
     empty_buffer: Buffer,
 }
 
-impl CompositorHandler for Wgpu {
+impl CompositorHandler for OpenCrosshair {
     fn scale_factor_changed(
         &mut self,
         _conn: &Connection,
@@ -402,7 +402,7 @@ impl CompositorHandler for Wgpu {
     }
 }
 
-impl OutputHandler for Wgpu {
+impl OutputHandler for OpenCrosshair {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
@@ -432,7 +432,7 @@ impl OutputHandler for Wgpu {
     }
 }
 
-impl LayerShellHandler for Wgpu {
+impl LayerShellHandler for OpenCrosshair {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         self.exit = true;
     }
@@ -481,7 +481,7 @@ impl LayerShellHandler for Wgpu {
     }
 }
 
-impl Wgpu {
+impl OpenCrosshair {
     fn hide_layer(&mut self) {
         self.layer.set_size(self.width, self.height);
         self.layer.attach(Some(self.empty_buffer.wl_buffer()), 0, 0);
@@ -855,33 +855,33 @@ impl Wgpu {
     }
 }
 
-impl ProvidesRegistryState for Wgpu {
+impl ProvidesRegistryState for OpenCrosshair {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
     registry_handlers![OutputState];
 }
 
-impl Dispatch<wl_region::WlRegion, ()> for Wgpu {
+impl Dispatch<wl_region::WlRegion, ()> for OpenCrosshair {
     fn event(
         _: &mut Self,
         _: &wl_region::WlRegion,
         _: wl_region::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Wgpu>,
+        _: &QueueHandle<OpenCrosshair>,
     ) {
     }
 }
 
-impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Wgpu {
+impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for OpenCrosshair {
     fn event(
         _: &mut Self,
         _: &ZwlrForeignToplevelManagerV1,
         _: <ZwlrForeignToplevelManagerV1 as wayland_client::Proxy>::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Wgpu>,
+        _: &QueueHandle<OpenCrosshair>,
     ) {
     }
 
@@ -893,14 +893,14 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Wgpu {
     }
 }
 
-impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Wgpu {
+impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for OpenCrosshair {
     fn event(
         state: &mut Self,
         handle: &ZwlrForeignToplevelHandleV1,
         event: <ZwlrForeignToplevelHandleV1 as wayland_client::Proxy>::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Wgpu>,
+        _: &QueueHandle<OpenCrosshair>,
     ) {
         match event {
             // zwlr_foreign_toplevel_handle_v1::Event::Title { title } => {
@@ -946,15 +946,15 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Wgpu {
     }
 }
 
-delegate_compositor!(Wgpu);
-delegate_output!(Wgpu);
-delegate_shm!(Wgpu);
+delegate_compositor!(OpenCrosshair);
+delegate_output!(OpenCrosshair);
+delegate_shm!(OpenCrosshair);
 
-delegate_layer!(Wgpu);
+delegate_layer!(OpenCrosshair);
 
-delegate_registry!(Wgpu);
+delegate_registry!(OpenCrosshair);
 
-impl ShmHandler for Wgpu {
+impl ShmHandler for OpenCrosshair {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm
     }
