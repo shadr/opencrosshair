@@ -835,24 +835,17 @@ impl OpenCrosshair {
 
         let mapped_data = buffer_slice.get_mapped_range();
 
-        let actual_stride = (self.width * 4) as i32;
         let (buffer, canvas) = self
             .slot_pool
             .create_buffer(
                 self.width as i32,
                 self.height as i32,
-                actual_stride,
+                bytes_per_row as i32,
                 wayland_client::protocol::wl_shm::Format::Argb8888,
             )
             .expect("Failed to create wl_buffer");
 
-        // Copy row by row, accounting for padding in the mapped_data
-        for row in 0..self.height as usize {
-            let src_offset = row * bytes_per_row as usize;
-            let dst_offset = row * actual_stride as usize;
-            canvas[dst_offset..dst_offset + actual_stride as usize]
-                .copy_from_slice(&mapped_data[src_offset..src_offset + actual_stride as usize]);
-        }
+        canvas.copy_from_slice(&mapped_data[..canvas.len()]);
 
         self.drawn_buffer = buffer;
 
