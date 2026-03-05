@@ -29,12 +29,12 @@ The binary will be located at `target/release/opencrosshair`.
 ## Roadmap
 
 - [x] Add CLI configuration using [`clap`](https://docs.rs/clap)
-  - [ ] Custom image path support
+  - [x] Custom image path support
   - [x] Scale adjustment
   - [x] Color customization
 - [ ] Explore software rendering alternatives to reduce resource usage
-- [ ] Optimize RAM consumption (currently 120 MB)
-- [ ] Add support for multiple monitor setups
+- [ ] Optimize RAM consumption (currently 100 MB)
+- [x] Add support for multiple monitor setups
 
 ## Contributing
 

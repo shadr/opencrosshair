@@ -144,7 +144,7 @@ fn main() {
 
     // Use the specified app IDs or default to an empty vector
     let visible_app_ids = if args.app_ids.is_empty() {
-        vec!["".to_string()] // Default to showing on all apps if no app IDs specified
+        Vec::new()
     } else {
         args.app_ids
     };
@@ -934,8 +934,8 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for OpenCrosshair {
                     let handle_id = handle.id();
                     if let Some(app_id) = state.toplevels.get(&handle_id) {
                         // Check if the app_id is in the list of visible app IDs
-                        if state.visible_app_ids.iter().any(|id| id == app_id)
-                            || state.visible_app_ids.contains(&"".to_string())
+                        if state.visible_app_ids.is_empty()
+                            || state.visible_app_ids.iter().any(|id| id == app_id)
                         {
                             state.show_layer();
                         } else {
