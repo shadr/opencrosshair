@@ -30,11 +30,7 @@ use wayland_backend::client::ObjectId;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
-    protocol::{
-        wl_output,
-        wl_region::{self},
-        wl_surface,
-    },
+    protocol::{wl_output, wl_region, wl_surface},
 };
 use wgpu::util::DeviceExt;
 
@@ -112,6 +108,10 @@ struct Args {
     /// Scale factor for the crosshair size (default: 0.8)
     #[arg(short = 's', long = "scale", default_value_t = 0.8)]
     scale: f32,
+
+    /// Index of the display/output to show the crosshair on (e.g., 0, 1)
+    #[arg(short = 'd', long = "display")]
+    display: Option<usize>,
 }
 
 fn main() {
@@ -165,12 +165,27 @@ fn main() {
     region.add(0, 0, 0, 0);
     let surface = compositor_state.create_surface(&qh);
 
+    let mut output = None;
+
+    let output_state = OutputState::new(&globals, &qh);
+    // TODO: Currently we can't get WlOutput info here, according to smithay docs compositor didn't send output info at this moment yet
+    let outputs = output_state
+        .outputs()
+        // .map(|wloutput| output_state.info(&wloutput))
+        // .flatten()
+        .collect::<Vec<_>>();
+    if let Some(display_index) = args.display {
+        if let Some(selected_output) = outputs.get(display_index) {
+            output = Some(selected_output)
+        }
+    }
+
     let layer = layer_shell.create_layer_surface(
         &qh,
         surface,
         Layer::Overlay,
         Some("opencrosshair_layer"),
-        None,
+        output,
     );
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_input_region(Some(&region));
@@ -742,7 +757,7 @@ impl Wgpu {
 
         // Create a buffer to read back the rendered texture
         // bytes_per_row must be aligned to COPY_BYTES_PER_ROW_ALIGNMENT (256 bytes)
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u32;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let bytes_per_row_unaligned = self.width * 4;
         let bytes_per_row = (bytes_per_row_unaligned + align - 1) & !(align - 1);
         let buffer_size = bytes_per_row as u64 * self.height as u64;
