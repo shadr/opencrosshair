@@ -237,11 +237,16 @@ fn main() {
 
     let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
     let mut slot_pool = SlotPool::new(4096, &shm).expect("Failed to create slot pool");
+
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let bytes_per_row_unaligned = size_x * 4;
+    let bytes_per_row = (bytes_per_row_unaligned + align - 1) & !(align - 1);
+
     let (drawn_buffer, _) = slot_pool
         .create_buffer(
             size_x as i32,
             size_y as i32,
-            size_x as i32 * 4,
+            bytes_per_row as i32,
             wayland_client::protocol::wl_shm::Format::Argb8888,
         )
         .unwrap();
@@ -249,7 +254,7 @@ fn main() {
         .create_buffer(
             size_x as i32,
             size_y as i32,
-            size_x as i32 * 4,
+            bytes_per_row as i32,
             wayland_client::protocol::wl_shm::Format::Argb8888,
         )
         .unwrap();
@@ -840,7 +845,7 @@ impl OpenCrosshair {
 
         let mapped_data = buffer_slice.get_mapped_range();
 
-        let (buffer, canvas) = self
+        let (drawn_buffer, canvas) = self
             .slot_pool
             .create_buffer(
                 self.width as i32,
@@ -849,10 +854,8 @@ impl OpenCrosshair {
                 wayland_client::protocol::wl_shm::Format::Argb8888,
             )
             .expect("Failed to create wl_buffer");
-
         canvas.copy_from_slice(&mapped_data[..canvas.len()]);
-
-        self.drawn_buffer = buffer;
+        self.drawn_buffer = drawn_buffer;
 
         // Clean up wgpu resources
         drop(mapped_data);
