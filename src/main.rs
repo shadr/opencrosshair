@@ -174,7 +174,6 @@ fn main() {
     let mut output = None;
 
     let outputs = get_outputs_with_info(&conn);
-    dbg!(&outputs);
     if let Some(selected_output_name) = args.display {
         for (wloutput, outputinfo) in &outputs {
             if let Some(outputinfo) = outputinfo {
