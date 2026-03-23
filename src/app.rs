@@ -5,13 +5,19 @@ use smithay_client_toolkit::{
     compositor::CompositorHandler,
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
     output::{OutputHandler, OutputState},
-    registry::{ProvidesRegistryState, RegistryState},
-    registry_handlers,
-    shell::{WaylandSurface, wlr_layer::{LayerShellHandler, LayerSurface, LayerSurfaceConfigure}},
-    shm::{Shm, ShmHandler, slot::{Buffer, SlotPool}},
     reexports::protocols_wlr::foreign_toplevel::v1::client::{
         zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
         zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+    },
+    registry::{ProvidesRegistryState, RegistryState},
+    registry_handlers,
+    shell::{
+        WaylandSurface,
+        wlr_layer::{LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
+    },
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
     },
 };
 use std::collections::HashMap;
@@ -91,13 +97,13 @@ impl App {
         }
     }
 
-    pub fn hide_layer(&mut self) {
+    pub fn hide_layer(&self) {
         self.layer.set_size(self.width, self.height);
         self.layer.attach(Some(self.empty_buffer.wl_buffer()), 0, 0);
         self.layer.commit();
     }
 
-    pub fn show_layer(&mut self) {
+    pub fn show_layer(&self) {
         self.layer.set_size(self.width, self.height);
         self.layer.attach(Some(self.drawn_buffer.wl_buffer()), 0, 0);
         self.layer.commit();
@@ -109,14 +115,8 @@ impl App {
         let adapter = self.adapter.as_ref().unwrap();
         let surface = self.surface.as_ref().unwrap();
 
-        self.renderer.initialize(
-            device,
-            queue,
-            adapter,
-            surface,
-            &self.crosshair,
-            self.scale,
-        );
+        self.renderer
+            .initialize(device, queue, adapter, surface, &self.crosshair, self.scale);
     }
 
     pub fn render_frame(&mut self) {
@@ -124,13 +124,9 @@ impl App {
         let queue = self.queue.as_ref().unwrap();
         let surface = self.surface.as_ref().unwrap();
 
-        self.drawn_buffer = self.renderer.render(
-            device,
-            queue,
-            surface,
-            self.color_rgba,
-            &mut self.slot_pool,
-        );
+        self.drawn_buffer =
+            self.renderer
+                .render(device, queue, surface, self.color_rgba, &mut self.slot_pool);
 
         self.renderer.cleanup();
         self.adapter = None;

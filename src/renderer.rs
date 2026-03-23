@@ -291,7 +291,7 @@ impl Renderer {
     }
 
     pub fn render(
-        &mut self,
+        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface: &wgpu::Surface<'static>,
